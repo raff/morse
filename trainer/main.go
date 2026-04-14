@@ -59,7 +59,28 @@ func main() {
 	check := flag.Bool("check", false, "quiz mode: type what you heard, Enter alone to replay")
 	checkTimeout := flag.Duration("timeout", 0, "in -check mode: time limit per entry (e.g. 3s); 0 = no limit")
 	gap := flag.Duration("gap", 0, "extra silence between entries (e.g. 500ms, 2s)")
+	send := flag.Bool("send", false, "sending mode: display a word, key it in Morse")
+	showStats := flag.Bool("stats", false, "show session history and quit")
+	ditKeyStr := flag.String("dit-key", "[", "dit key in sending mode (single character)")
+	dahKeyStr := flag.String("dah-key", "]", "dah key in sending mode (single character)")
+	quiet := flag.Bool("quiet", false, "in -send mode: skip audio playback of the word")
 	flag.Parse()
+
+	// Stats mode: no audio or word list needed.
+	if *showStats {
+		printStats()
+		return
+	}
+
+	// needAudio is false only when the user explicitly silenced send mode.
+	needAudio := !(*send && *quiet)
+
+	// Parse dit/dah keys.
+	if len(*ditKeyStr) != 1 || len(*dahKeyStr) != 1 {
+		log.Fatal("-dit-key and -dah-key must each be a single ASCII character")
+	}
+	ditKey := (*ditKeyStr)[0]
+	dahKey := (*dahKeyStr)[0]
 
 	// Validate / resolve Farnsworth speed.
 	if *fwpm == 0 {
@@ -90,6 +111,10 @@ func main() {
 			fmt.Print("Quiz mode: type what you heard and press Enter. Enter alone to replay.\n\n")
 		}
 	}
+	if *send {
+		fmt.Printf("Send mode: key each word in Morse (%s=dit  %s=dah), Enter to submit.\n\n",
+			*ditKeyStr, *dahKeyStr)
+	}
 
 	// Load word list: command-line args > -file > built-in.
 	var words []string
@@ -117,19 +142,23 @@ func main() {
 		total = len(words)
 	}
 
-	// Initialize audio (blocks until device is ready).
-	ap, err := NewAudioPlayer(*freq, *volume)
-	if err != nil {
-		log.Fatalf("audio init failed: %v\n(oto requires an audio output device)", err)
+	// Initialize audio unless the user silenced send mode.
+	var err error
+	var ap *AudioPlayer
+	if needAudio {
+		ap, err = NewAudioPlayer(*freq, *volume)
+		if err != nil {
+			log.Fatalf("audio init failed: %v\n(oto requires an audio output device)", err)
+		}
+		defer ap.Close()
 	}
-	defer ap.Close()
 
-	// Set up raw input for check mode. Raw mode disables OPOST so output in
-	// the quiz loop uses \r\n. The terminal is restored before printing the
-	// final summary so that uses normal \n.
+	// Set up raw input for check and send modes. Raw mode disables OPOST so
+	// output in the quiz/send loop uses \r\n. The terminal is restored before
+	// printing the final summary so that uses normal \n.
 	var stdinChars <-chan byte
 	var restoreTerm func()
-	if *check {
+	if *check || *send {
 		stdinChars, restoreTerm, err = startRawInput()
 		if err != nil {
 			log.Fatalf("raw terminal: %v", err)
@@ -137,7 +166,7 @@ func main() {
 	}
 
 	// Signal handler. In raw mode Ctrl+C arrives as byte 3 (ISIG is disabled),
-	// so we only need the signal handler for SIGTERM and for non-check SIGINT.
+	// so we only need the signal handler for SIGTERM and for non-check/send SIGINT.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -152,8 +181,11 @@ func main() {
 	var (
 		played       int
 		correct      int
+		retried      int
 		wrongAnswers []string
 	)
+
+	startTime := time.Now()
 
 outer:
 	for {
@@ -179,13 +211,18 @@ outer:
 				continue // no encodable characters
 			}
 
-			audio := BuildAudio(els, timing, *freq, *volume)
+			var audio []byte
+			if needAudio {
+				audio = BuildAudio(els, timing, *freq, *volume)
+			}
 
-			if *show && !*check {
+			if *show && !*check && !*send {
 				fmt.Printf("[%d] %s\n", played+1, entry)
 			}
 
-			ap.Play(audio)
+			if needAudio && !*send {
+				ap.Play(audio)
+			}
 
 			switch {
 			case *check:
@@ -200,6 +237,22 @@ outer:
 				}
 				played++
 				// \r\n because we are still in raw mode here.
+				fmt.Printf("    %d/%d (%d%%)\r\n", correct, played, 100*correct/played)
+
+			case *send:
+				hit, didRetry, quit := sendWord(stdinChars, entry, played+1, timing, ditKey, dahKey, ap)
+				if quit {
+					break outer
+				}
+				if hit {
+					correct++
+				} else {
+					wrongAnswers = append(wrongAnswers, entry)
+				}
+				if didRetry {
+					retried++
+				}
+				played++
 				fmt.Printf("    %d/%d (%d%%)\r\n", correct, played, 100*correct/played)
 
 			case *reveal:
@@ -224,7 +277,27 @@ outer:
 	if restoreTerm != nil {
 		restoreTerm()
 	}
-	printSummary(played, correct, wrongAnswers, *check)
+
+	// Persist session results for -stats.
+	if (*check || *send) && played > 0 {
+		mode := "check"
+		if *send {
+			mode = "send"
+		}
+		if err := appendSession(SessionRecord{
+			Date:     time.Now(),
+			Mode:     mode,
+			Words:    played,
+			Correct:  correct,
+			Retried:  retried,
+			WPM:      *charWPM,
+			Duration: time.Since(startTime).Milliseconds(),
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not save session: %v\n", err)
+		}
+	}
+
+	printSummary(played, correct, wrongAnswers, *check || *send)
 }
 
 func printSummary(played, correct int, wrongAnswers []string, checkMode bool) {

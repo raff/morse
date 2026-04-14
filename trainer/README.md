@@ -1,7 +1,8 @@
 # mt — Morse code trainer
 
 A command-line Morse code trainer written in Go. It plays audio of words or
-phrases in Morse code and optionally quizzes you on what you heard.
+phrases in Morse code and optionally quizzes you on what you heard, or
+prompts you to key each word yourself in Morse.
 
 ## Build
 
@@ -39,11 +40,16 @@ Word sources are checked in order: **command-line arguments → `-file` → buil
 | `-count N` | 0 | Number of entries to play. 0 means play all entries once. |
 | `-shuffle` | off | Randomize playback order each pass. |
 | `-repeat` | off | Loop through the list indefinitely. |
-| `-show` | off | Print each entry to the terminal *before* playing (read-along mode). Ignored in `-check` mode. |
+| `-show` | off | Print each entry to the terminal *before* playing (read-along mode). Ignored in `-check` and `-send` modes. |
 | `-reveal` | off | Print each entry to the terminal *after* playing (decode-then-check mode). |
 | `-check` | off | Quiz mode: type what you heard after each entry. Enter alone replays. Requires an interactive terminal. |
 | `-timeout d` | 0 | In `-check` mode: time limit per entry, e.g. `3s`. 0 means no limit. |
 | `-gap d` | 0 | Extra silence between entries, e.g. `500ms` or `2s`. Added on top of the normal inter-word gap. |
+| `-send` | off | Sending mode: displays each word and waits for you to key it in Morse. |
+| `-dit-key c` | `[` | Key used for dit in sending mode (single ASCII character). |
+| `-dah-key c` | `]` | Key used for dah in sending mode (single ASCII character). |
+| `-quiet` | off | In `-send` mode: skip audio playback of each keypress. |
+| `-stats` | off | Show session history and quit. No word list or audio needed. |
 
 ### Examples
 
@@ -71,6 +77,18 @@ Word sources are checked in order: **command-line arguments → `-file` → buil
 
 # Quiz on a fixed set of words, 10 at a time
 ./mt -check -shuffle -count 10 the and of to a in that is was for
+
+# Sending practice: key each displayed word using [ (dit) and ] (dah)
+./mt -send -shuffle
+
+# Sending practice with custom keys and Farnsworth timing
+./mt -send -dit-key z -dah-key x -wpm 20 -fwpm 12
+
+# Sending practice, silent (no keypress audio feedback)
+./mt -send -quiet
+
+# Show session history
+./mt -stats
 ```
 
 ### Quiz mode (`-check`)
@@ -109,6 +127,55 @@ Final score: 8/10 (80%)
 Missed: would, come
 ```
 
+### Sending mode (`-send`)
+
+The terminal is put in raw mode. For each entry the word is displayed and you
+key it in Morse using the dit and dah keys (`[` and `]` by default). Each
+keypress plays an audio tone of the correct dit or dah duration. A pause of
+2× the character gap (360 ms at 20 WPM) with no keypresses ends the current
+character and decodes it.
+
+```
+[1] Key: the
+    > the
+    correct
+    1/1 (100%)
+[2] Key: of
+    > oe
+    wrong  (was: of)
+    1/2 (50%)
+```
+
+- The decoded characters appear as you type.
+- Once the correct word is fully keyed and the character boundary timer fires,
+  the entry advances automatically — no Enter needed.
+- Press **Enter** at any time to submit what you have so far.
+- Press **Backspace** or **Delete** to clear the current attempt and retry.
+  A retried word is scored as wrong even if you subsequently key it correctly.
+- Press **Ctrl+C** or **Ctrl+D** to stop early.
+
+Session results (including retried-word count) are saved to `~/.mt/sessions.jsonl`.
+
+### Stats mode (`-stats`)
+
+```
+./mt -stats
+```
+
+Reads all saved session records and prints a summary:
+
+```
+Sessions: 12 total (8 receive, 4 send)
+Accuracy: 74% overall (182/246 correct)
+Retried : 17 words used Delete
+WPM     : 15 → 15 → 20 → 20 → 20 → 20 → 25 → 25 (last 8)
+
+Recent sessions:
+  2025-04-13  send    18/25 ( 72%)  20 wpm  4m12s  3 retried
+  2025-04-12  receive 24/30 ( 80%)  20 wpm  3m48s
+  ...
+```
+
 ### Word list file format
 
 ```
@@ -127,7 +194,7 @@ Blank lines and lines beginning with `#` are ignored.
 
 ## Implementation
 
-The program is split across four source files.
+The program is split across six source files.
 
 ### `morse.go` — encoding and timing
 
@@ -185,12 +252,17 @@ without any additional logic in the caller.
 **`tone(freq, volume, dur) []byte`** generates a sine wave for the given
 duration. A 5 ms linear **attack and release envelope** is applied at each
 end to eliminate the audible click that a hard-started or hard-stopped tone
-would produce. The envelope ramps from 0 to full amplitude over 5 ms, and
-back to 0 over the last 5 ms.
+would produce.
 
-**`AudioPlayer.Play(data []byte)`** creates an oto player for each buffer,
-starts it, and polls `IsPlaying()` every millisecond until the buffer is
-exhausted, making the call synchronous from the caller's perspective.
+**`AudioPlayer.Play(data []byte)`** creates an oto player, starts it, and
+polls `IsPlaying()` every millisecond until the buffer is exhausted. Used for
+word playback in listen/quiz modes where blocking is acceptable.
+
+**`AudioPlayer.PlayNoWait(data []byte)`** creates an oto player, starts it,
+and returns immediately. The player reference is kept in `AudioPlayer.active`
+until `IsPlaying()` returns false, preventing Go's garbage collector from
+collecting (and thereby stopping) the player mid-play. Used in sending mode
+for per-keypress audio feedback with no input-blocking latency.
 
 ### `input.go` — raw terminal input and quiz interaction
 
@@ -224,21 +296,61 @@ summary so that output returns to normal.
 
 In raw mode Ctrl+C does not generate SIGINT (ISIG is off), so it is caught
 directly as byte `0x03`. A separate goroutine handles `SIGTERM` (and
-non-check-mode `SIGINT`) and also restores the terminal before exiting.
+non-check/send-mode `SIGINT`) and also restores the terminal before exiting.
+
+### `send.go` — sending mode
+
+**`decodePattern(pattern string) rune`** maps a Morse pattern string (e.g.
+`".-"`) back to its character using a reverse lookup table built from
+`morseTable` at startup.
+
+**`sendWord(...) (correct, retried, quit bool)`** manages one sending entry:
+
+1. Displays `[N] Key: word` and an empty `>` prompt.
+2. Runs a `select` loop over the raw-input byte channel and a character
+   boundary timer:
+   - Dit key (`[` by default) or dah key (`]`) appends `.` or `-` to the
+     current character pattern and plays a tone via `PlayNoWait`. The
+     character boundary timer is reset on every keypress.
+   - Backspace / Delete clears the entire attempt and sets a `penalized` flag.
+   - Enter submits whatever has been decoded so far.
+   - Ctrl+C / Ctrl+D return `quit=true`.
+3. When the character boundary timer fires (2× `CharGap`, 360 ms at 20 WPM),
+   the current pattern is decoded and appended to the decoded word. If the
+   decoded word matches the target and the boundary timer fired (not Enter),
+   the entry advances automatically.
+4. Returns `correct=true` only if the word matched **and** no Delete was used.
+   `retried=true` if Delete was pressed at least once.
+
+### `stats.go` — session persistence
+
+**`appendSession(SessionRecord)`** appends a JSON line to `~/.mt/sessions.jsonl`,
+creating the directory if needed.
+
+**`loadSessions()`** reads all records from the file, skipping malformed lines.
+
+**`printStats()`** aggregates totals, computes accuracy, and prints a WPM
+trend (last 8 sessions) and a recent-session table (last 5, newest first).
 
 ### `main.go` — CLI and playback loop
 
 Parses flags with the standard `flag` package. Word source priority:
 command-line arguments → `-file` → built-in 90-word list.
 
-The main loop builds a (optionally shuffled) index each pass, then iterates
-through entries. For each entry it:
+`-stats` mode runs `printStats()` and exits before any audio or word-list
+setup. Otherwise, the main loop builds a (optionally shuffled) index each
+pass, then iterates through entries. For each entry it:
 
 1. Encodes the text to elements (`Encode`).
-2. Renders elements to PCM (`BuildAudio`).
-3. Plays the audio (`AudioPlayer.Play`).
-4. In `-check` mode, calls `askUser`, then prints the running score.
-5. In `-reveal` mode, prints the entry text after playing.
+2. Renders elements to PCM (`BuildAudio`), unless in `-send` with `-quiet`.
+3. In listen modes, plays the audio (`AudioPlayer.Play`).
+4. Dispatches to the appropriate mode handler:
+   - `-check`: `askUser`, then prints the running score.
+   - `-send`: `sendWord`, then prints the running score.
+   - `-reveal`: prints the entry text after playing.
+
+At the end, if any entries were attempted in `-check` or `-send` mode, the
+session record is appended to `~/.mt/sessions.jsonl`.
 
 ## Dependencies
 

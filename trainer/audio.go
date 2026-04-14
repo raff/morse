@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/ebitengine/oto/v3"
@@ -18,6 +19,12 @@ type AudioPlayer struct {
 	ctx    *oto.Context
 	freq   float64
 	volume float64
+
+	// active holds references to in-flight PlayNoWait players.
+	// oto v3.4 auto-closes players when they are garbage collected,
+	// which cuts off audio mid-play. Keeping references here prevents that.
+	mu     sync.Mutex
+	active []*oto.Player
 }
 
 // NewAudioPlayer initializes the audio subsystem with the given tone frequency
@@ -48,7 +55,34 @@ func (p *AudioPlayer) Play(data []byte) {
 	for player.IsPlaying() {
 		time.Sleep(time.Millisecond)
 	}
-	// player.Close() not needed as of oto v3.4
+}
+
+// PlayNoWait starts playback and returns immediately.
+// It retains a reference to the player until playback completes so that
+// Go's GC cannot collect (and thereby stop) an in-flight player.
+// Must be called from a single goroutine.
+func (p *AudioPlayer) PlayNoWait(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	// Drop finished players before adding the new one.
+	p.mu.Lock()
+	n := 0
+	for _, pl := range p.active {
+		if pl.IsPlaying() {
+			p.active[n] = pl
+			n++
+		}
+	}
+	p.active = p.active[:n]
+	p.mu.Unlock()
+
+	pl := p.ctx.NewPlayer(bytes.NewReader(data))
+	pl.Play()
+
+	p.mu.Lock()
+	p.active = append(p.active, pl)
+	p.mu.Unlock()
 }
 
 // BuildAudio converts a sequence of Morse elements into a signed int16 LE
