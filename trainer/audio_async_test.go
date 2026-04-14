@@ -45,24 +45,27 @@ func TestAsyncAudioLatency(t *testing.T) {
 		t.Logf("  total:       %v  (expected ~%v)", t3.Sub(t0), timing.Dit)
 	}
 
-	// --- 3. PlayNoWait: does each call return immediately even with active players? ---
-	t.Log("--- PlayNoWait (current approach) ---")
-	var maxPlay time.Duration
+	// --- 3. PlayQueued: does each enqueue return immediately even under load? ---
+	// Tones play serially via the drain goroutine, so you should hear 8 distinct dits.
+	// The sleep between enqueues uses full element spacing (dit + toneGap) so that
+	// each tone finishes before the next is queued, giving clean audible separation.
+	t.Log("--- PlayQueued (send-mode approach) ---")
+	var maxEnqueue time.Duration
 	for i := 0; i < 8; i++ {
 		start := time.Now()
-		ap.PlayNoWait(ditTone)
+		ap.PlayQueued(ditTone)
 		lat := time.Since(start)
-		if lat > maxPlay {
-			maxPlay = lat
+		if lat > maxEnqueue {
+			maxEnqueue = lat
 		}
-		t.Logf("  call %d: %v", i+1, lat)
-		time.Sleep(15 * time.Millisecond)
+		t.Logf("  enqueue %d: %v", i+1, lat)
+		time.Sleep(timing.Dit + timing.ToneGap) // full element spacing → distinct tones
 	}
-	t.Logf("max PlayNoWait latency: %v", maxPlay)
-	if maxPlay > 5*time.Millisecond {
-		t.Errorf("PlayNoWait is blocking: %v (want < 5ms)", maxPlay)
+	t.Logf("max PlayQueued enqueue latency: %v", maxEnqueue)
+	if maxEnqueue > time.Millisecond {
+		t.Errorf("PlayQueued is blocking: %v (want < 1ms)", maxEnqueue)
 	}
-	time.Sleep(300 * time.Millisecond) // let audio drain
+	time.Sleep(timing.Dit + 50*time.Millisecond) // let the last queued tone finish
 }
 
 // TestTimerAccuracyWithAudio checks whether busy-waiting audio goroutines

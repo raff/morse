@@ -113,9 +113,9 @@ func sendWord(chars <-chan byte, word string, n int, timing Timing, ditKey, dahK
 					// Play audio feedback (non-blocking, GC-safe).
 					if ap != nil {
 						if b == ditKey {
-							ap.PlayNoWait(ditTone)
+							ap.PlayQueued(ditTone)
 						} else {
-							ap.PlayNoWait(dahTone)
+							ap.PlayQueued(dahTone)
 						}
 					}
 					// Reset the character boundary timer on each element.

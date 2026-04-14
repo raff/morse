@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -19,6 +20,12 @@ type AudioPlayer struct {
 	ctx    *oto.Context
 	freq   float64
 	volume float64
+
+	// playQueue serializes per-keypress tones so they never overlap.
+	// A dedicated goroutine drains the queue via Play(), which blocks until
+	// each tone finishes. This prevents the PCM-summing clipping that occurs
+	// when multiple oto players run concurrently at the same frequency.
+	playQueue chan []byte
 
 	// active holds references to in-flight PlayNoWait players.
 	// oto v3.4 auto-closes players when they are garbage collected,
@@ -39,11 +46,45 @@ func NewAudioPlayer(freq, volume float64) (*AudioPlayer, error) {
 		return nil, err
 	}
 	<-readyCh
-	return &AudioPlayer{ctx: ctx, freq: freq, volume: volume}, nil
+	ap := &AudioPlayer{
+		ctx:       ctx,
+		freq:      freq,
+		volume:    volume,
+		playQueue: make(chan []byte, 64),
+	}
+	go ap.drainQueue()
+	return ap, nil
 }
 
-// Close is a no-op; oto.Context does not expose a Close method.
-func (p *AudioPlayer) Close() {}
+// Close stops the serial playback goroutine. The current in-flight tone (if any)
+// finishes before the goroutine exits.
+func (p *AudioPlayer) Close() {
+	close(p.playQueue)
+}
+
+// drainQueue is the serial playback goroutine. It plays one tone at a time,
+// blocking until each finishes before pulling the next from the queue.
+func (p *AudioPlayer) drainQueue() {
+	for data := range p.playQueue {
+		p.Play(data)
+	}
+}
+
+// PlayQueued enqueues audio for serial playback and returns immediately.
+// Tones play one after another in arrival order, so rapid keypresses produce
+// sequential, non-overlapping tones with no PCM-summing distortion.
+func (p *AudioPlayer) PlayQueued(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	select {
+	case p.playQueue <- data:
+	default:
+		// Buffer full (64 tones queued) — drop rather than block.
+		// Should never happen at any realistic typing speed.
+		log.Println("play queue full, dropping tone")
+	}
+}
 
 // Play writes PCM data to the audio device and blocks until playback finishes.
 func (p *AudioPlayer) Play(data []byte) {
