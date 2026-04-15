@@ -182,7 +182,7 @@ func goDeliverSendKey(key C.int, pressed C.int) {
 		}
 		tapState.Unlock()
 		select {
-		case ch <- KeyEvent{Key: k, Pressed: true, At: time.Now()}:
+		case ch <- KeyEvent{Key: k, Pressed: true, At: time.Now(), Direct: true}:
 		default:
 		}
 

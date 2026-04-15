@@ -2,10 +2,11 @@
 
 ## High priority
 
-### Fix send-mode input timing
-**What:** There are known timing issues in send mode (e.g. element rhythm not feeling right under certain keying speeds or hold patterns).
-**Why:** Affects the feel of iambic keying and may produce incorrect character decoding.
-**Depends on:** The `IambicAdapter` + `CGEventTap` pipeline shipped in the current commit. Needs profiling/logging of actual event timestamps to diagnose.
+### Fix send-mode dit auto-repeat (USB iambic paddle)
+**What:** Consecutive dit presses consistently produce too many dits. Typing `f` (..-.) reliably generates extra dits (e.g. `...-.`). The problem does not reproduce in other trainers at the same WPM, so it is not operator error.
+**Why:** Corrupts character decoding silently; makes the trainer unusable for practice at any realistic keying speed.
+**What we know:** Both dit and dah now use `firstRepeat = CharGap + 2×ToneGap = 5×Dit` (300 ms at 20 WPM) before the first auto-repeat, which is below `charBoundary` (6×Dit = 360 ms). USB paddle press durations measured at 30–100 ms via `make timing`. The extra elements appear to come from auto-repeat firing too early or from the IambicAdapter state machine allowing a repeat after a quick press+release cycle. The `make timing` tool is the right instrument for further diagnosis — log raw `KeyEvent` timestamps alongside `MorseInput` output while keying `f`.
+**Depends on:** `IambicAdapter` + `CGEventTap` pipeline (current code).
 
 
 

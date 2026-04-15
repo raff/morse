@@ -18,6 +18,11 @@ type KeyEvent struct {
 	Key     KeyID
 	Pressed bool // true = pressed, false = released
 	At      time.Time
+	// Direct is true for modifier-key events (USB iambic paddle via left/right
+	// Ctrl) that bypass stdin correlation.  The IambicAdapter uses a shorter
+	// initial repeat delay for direct events so that paddle hold-to-repeat
+	// fires at the configured WPM rate rather than the slower keyboard window.
+	Direct bool
 }
 
 // MorseInputKind is the event type consumed by sendWord.
@@ -61,6 +66,20 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	ditPeriod := timing.Dit + timing.ToneGap
 	dahPeriod := timing.Dah + timing.ToneGap
 
+	// Initial repeat delay — fires before the first auto-repeat.
+	//
+	// Two constraints:
+	//   (a) Must be > typical key-press hold time (~150 ms) so a single
+	//       deliberate press does not accidentally trigger a repeat.
+	//   (b) Must be < charBoundary (2×CharGap = 6×Dit) so that intentional
+	//       hold-to-repeat fires before sendWord flushes the character.
+	//
+	// CharGap + 2×ToneGap = 5×Dit satisfies both at any WPM:
+	//   20 WPM → 300 ms  (charBoundary = 360 ms)
+	//   30 WPM → 200 ms  (charBoundary = 240 ms)
+	// Subsequent repeats use the normal ditPeriod / dahPeriod.
+	firstRepeat := timing.CharGap + 2*timing.ToneGap
+
 	ditHeld, dahHeld := false, false
 
 	ditTimer := time.NewTimer(0)
@@ -79,7 +98,7 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				// Pressing dit pauses dah auto-repeat to avoid spurious elements
 				// when the paddles overlap slightly.
 				drainTimer(dahTimer)
-				ditTimer.Reset(ditPeriod)
+				ditTimer.Reset(firstRepeat)
 			} else if !evt.Pressed && ditHeld {
 				ditHeld = false
 				drainTimer(ditTimer)
@@ -94,7 +113,7 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				send(MorseInputDah)
 				// Pressing dah pauses dit auto-repeat.
 				drainTimer(ditTimer)
-				dahTimer.Reset(dahPeriod)
+				dahTimer.Reset(firstRepeat)
 			} else if !evt.Pressed && dahHeld {
 				dahHeld = false
 				drainTimer(dahTimer)
