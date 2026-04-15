@@ -26,17 +26,20 @@ func decodePattern(pattern string) rune {
 	return '?'
 }
 
-// sendWord presents a word for the user to key in Morse code.
+// sendWord presents a word for the user to key in Morse code via the iambic
+// input pipeline (<-chan MorseInput from NewIambicAdapter).
 //
-// Each press of ditKey appends a dit (.) and each press of dahKey appends a
-// dah (-) to the current character pattern. A pause of charBoundary (2× the
-// configured CharGap) with no key press flushes the accumulated pattern as a
-// decoded character. Enter submits the word for scoring.
+// MorseInputDit/Dah append the corresponding symbol to the current character
+// pattern.  A pause of charBoundary (2× CharGap) with no new element flushes
+// the accumulated pattern as a decoded character.  MorseInputSubmit submits
+// the word for scoring.
 //
-// ap may be nil (quiet mode); when non-nil each keypress plays the corresponding tone.
+// ap may be nil (quiet mode); when non-nil each element plays the
+// corresponding tone via the queued audio path.
 //
-// Returns (correct, retried, quit). retried is true if Delete was used at least once.
-func sendWord(chars <-chan byte, word string, n int, timing Timing, ditKey, dahKey byte, ap *AudioPlayer) (correct, retried, quit bool) {
+// Returns (correct, retried, quit). retried is true if Delete was used at
+// least once.
+func sendWord(inputs <-chan MorseInput, word string, n int, timing Timing, ap *AudioPlayer) (correct, retried, quit bool) {
 	upper := strings.ToUpper(strings.TrimSpace(word))
 	var expected []rune
 	for _, r := range upper {
@@ -50,29 +53,29 @@ func sendWord(chars <-chan byte, word string, n int, timing Timing, ditKey, dahK
 
 	fmt.Printf("[%d] Key: %s\r\n    > ", n, strings.ToLower(word))
 
-	// Pre-build tone PCM for per-keypress audio feedback.
+	// Pre-build tone PCM for per-element audio feedback.
+	// Each queued chunk includes the inter-element silence so consecutive
+	// elements played via PlayQueued sound like distinct, evenly-spaced tones
+	// rather than a continuous buzz.
 	var ditTone, dahTone []byte
 	if ap != nil {
-		ditTone = tone(ap.freq, ap.volume, timing.Dit)
-		dahTone = tone(ap.freq, ap.volume, timing.Dah)
+		gap := silence(timing.ToneGap)
+		ditTone = append(tone(ap.freq, ap.volume, timing.Dit), gap...)
+		dahTone = append(tone(ap.freq, ap.volume, timing.Dah), gap...)
 	}
 
 	var (
 		currentPat strings.Builder
 		decoded    []rune
-		penalized  bool // set when Delete was used; word counts as wrong even if correct
+		penalized  bool
 	)
 
-	// charBoundary: gap after the last element that ends the current character.
-	// 2× charGap gives beginners extra time to think between elements of a letter.
+	// charBoundary: silence after the last element that ends a character.
+	// 2× CharGap gives beginners extra time between letters.
 	charBoundary := timing.CharGap * 2
 
-	// charTimer fires when the user pauses long enough to end a character.
-	// Start it unarmed; arm it on the first key press.
 	charTimer := time.NewTimer(0)
-	if !charTimer.Stop() {
-		<-charTimer.C
-	}
+	drainTimer(charTimer)
 
 	flushChar := func() {
 		if currentPat.Len() == 0 {
@@ -86,53 +89,43 @@ func sendWord(chars <-chan byte, word string, n int, timing Timing, ditKey, dahK
 
 	for {
 		select {
-		case b, ok := <-chars:
+		case inp, ok := <-inputs:
 			if !ok {
 				return false, penalized, true
 			}
-			switch b {
-			case 3, 4: // Ctrl+C, Ctrl+D
+			switch inp.Kind {
+			case MorseInputQuit:
 				return false, penalized, true
-			case '\r', '\n': // Enter submits the word
+
+			case MorseInputSubmit:
 				flushChar()
 				fmt.Print("\r\n")
 				goto done
-			case 0x7F, 0x08: // DEL or Backspace — clear and retry
-				if !charTimer.Stop() {
-					select {
-					case <-charTimer.C:
-					default:
-					}
-				}
+
+			case MorseInputDelete:
+				drainTimer(charTimer)
 				currentPat.Reset()
 				decoded = decoded[:0]
 				penalized = true
 				fmt.Print("\r\033[2K    > ")
-			default:
-				if b == ditKey || b == dahKey {
-					// Play audio feedback (non-blocking, GC-safe).
-					if ap != nil {
-						if b == ditKey {
-							ap.PlayQueued(ditTone)
-						} else {
-							ap.PlayQueued(dahTone)
-						}
-					}
-					// Reset the character boundary timer on each element.
-					if !charTimer.Stop() {
-						select {
-						case <-charTimer.C:
-						default:
-						}
-					}
-					charTimer.Reset(charBoundary)
-					if b == ditKey {
-						currentPat.WriteByte('.')
-					} else {
-						currentPat.WriteByte('-')
-					}
+
+			case MorseInputDit:
+				if ap != nil {
+					ap.PlayQueued(ditTone)
 				}
+				drainTimer(charTimer)
+				charTimer.Reset(charBoundary)
+				currentPat.WriteByte('.')
+
+			case MorseInputDah:
+				if ap != nil {
+					ap.PlayQueued(dahTone)
+				}
+				drainTimer(charTimer)
+				charTimer.Reset(charBoundary)
+				currentPat.WriteByte('-')
 			}
+
 		case <-charTimer.C:
 			flushChar()
 			// Auto-advance as soon as the correct word is fully keyed.

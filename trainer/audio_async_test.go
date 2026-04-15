@@ -17,6 +17,8 @@ func TestAsyncAudioLatency(t *testing.T) {
 	timing := NewTiming(20, 20)
 	ditTone := tone(700, 0.3, timing.Dit)
 	t.Logf("dit duration: %v  (%d bytes)", timing.Dit, len(ditTone))
+	dahTone := tone(700, 0.3, timing.Dah)
+	t.Logf("dah duration: %v  (%d bytes)", timing.Dah, len(dahTone))
 
 	// --- 1. How long does NewPlayer() take? ---
 	t.Log("--- NewPlayer() overhead ---")
@@ -53,7 +55,11 @@ func TestAsyncAudioLatency(t *testing.T) {
 	var maxEnqueue time.Duration
 	for i := 0; i < 8; i++ {
 		start := time.Now()
-		ap.PlayQueued(ditTone)
+		if i%2 == 0 {
+			ap.PlayQueued(ditTone)
+		} else {
+			ap.PlayQueued(dahTone)
+		}
 		lat := time.Since(start)
 		if lat > maxEnqueue {
 			maxEnqueue = lat

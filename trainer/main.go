@@ -112,7 +112,7 @@ func main() {
 		}
 	}
 	if *send {
-		fmt.Printf("Send mode: key each word in Morse (%s=dit  %s=dah), Enter to submit.\n\n",
+		fmt.Printf("Send mode: %s=dit  %s=dah  (also left-Ctrl=dit  right-Ctrl=dah), hold to auto-repeat.\n\n",
 			*ditKeyStr, *dahKeyStr)
 	}
 
@@ -165,12 +165,35 @@ func main() {
 		}
 	}
 
+	// Set up the iambic input pipeline for send mode.
+	//
+	// On macOS, StartSendKeySource uses CGEventTap to capture real key
+	// press+release events for both the configured paddle keys ([/]) and
+	// left/right Control (commonly emitted by USB iambic paddles).  The
+	// IambicAdapter converts held keys into WPM-rate auto-repeating elements.
+	//
+	// On other platforms StartSendKeySource wraps the raw terminal byte stream;
+	// press+release is synthetic so there is no hold-to-repeat.
+	var morseInputs <-chan MorseInput
+	var stopSend func()
+	if *send {
+		keyEvents, stop, keyErr := StartSendKeySource(stdinChars, ditKey, dahKey)
+		if keyErr != nil {
+			log.Fatalf("send input: %v", keyErr)
+		}
+		stopSend = stop
+		morseInputs = NewIambicAdapter(keyEvents, timing)
+	}
+
 	// Signal handler. In raw mode Ctrl+C arrives as byte 3 (ISIG is disabled),
 	// so we only need the signal handler for SIGTERM and for non-check/send SIGINT.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
+		if stopSend != nil {
+			stopSend()
+		}
 		if restoreTerm != nil {
 			restoreTerm()
 		}
@@ -240,7 +263,7 @@ outer:
 				fmt.Printf("    %d/%d (%d%%)\r\n", correct, played, 100*correct/played)
 
 			case *send:
-				hit, didRetry, quit := sendWord(stdinChars, entry, played+1, timing, ditKey, dahKey, ap)
+				hit, didRetry, quit := sendWord(morseInputs, entry, played+1, timing, ap)
 				if quit {
 					break outer
 				}
@@ -271,6 +294,11 @@ outer:
 		if !*repeat {
 			break
 		}
+	}
+
+	// Stop the send key source before restoring the terminal.
+	if stopSend != nil {
+		stopSend()
 	}
 
 	// Restore terminal before printing the summary so \n works normally.

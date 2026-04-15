@@ -131,3 +131,56 @@ func drainChars(ch <-chan byte) {
 		}
 	}
 }
+
+// NewTerminalKeySource converts a raw byte channel (from startRawInput) into a
+// KeyEvent channel.  Because terminal raw mode only delivers key-press events,
+// each dit/dah byte triggers a synthetic press+release pair so that the
+// IambicAdapter sees a clean edge but will not auto-repeat (single element per
+// keystroke).  Control keys (Enter, Delete, Quit) are emitted as press-only
+// events.
+//
+// ditKey and dahKey are the ASCII bytes mapped to dit and dah.  Pass 0 for
+// either to disable that mapping (useful in HID mode where those events arrive
+// from a separate source).
+func NewTerminalKeySource(bytes <-chan byte, ditKey, dahKey byte) <-chan KeyEvent {
+	out := make(chan KeyEvent, 64)
+	go func() {
+		defer close(out)
+		now := func() time.Time { return time.Now() }
+		press := func(k KeyID) {
+			out <- KeyEvent{Key: k, Pressed: true, At: now()}
+		}
+		pressRelease := func(k KeyID) {
+			t := now()
+			out <- KeyEvent{Key: k, Pressed: true, At: t}
+			out <- KeyEvent{Key: k, Pressed: false, At: t}
+		}
+		for {
+			b, ok := <-bytes
+			if !ok {
+				press(KeyQuit)
+				return
+			}
+			switch b {
+			case 3, 4: // Ctrl+C / Ctrl+D
+				press(KeyQuit)
+				return
+			case '\r', '\n':
+				pressRelease(KeyEnter)
+			case 127, 8: // Backspace / DEL
+				pressRelease(KeyDelete)
+			case 27: // ESC — drain the escape sequence silently
+				time.Sleep(5 * time.Millisecond)
+				drainChars(bytes)
+			default:
+				if ditKey != 0 && b == ditKey {
+					pressRelease(KeyDit)
+				} else if dahKey != 0 && b == dahKey {
+					pressRelease(KeyDah)
+				}
+			}
+		}
+	}()
+	return out
+}
+

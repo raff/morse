@@ -2,6 +2,13 @@
 
 ## High priority
 
+### Fix send-mode input timing
+**What:** There are known timing issues in send mode (e.g. element rhythm not feeling right under certain keying speeds or hold patterns).
+**Why:** Affects the feel of iambic keying and may produce incorrect character decoding.
+**Depends on:** The `IambicAdapter` + `CGEventTap` pipeline shipped in the current commit. Needs profiling/logging of actual event timestamps to diagnose.
+
+
+
 ### Add unit tests for pure functions
 **What:** Create morse_test.go, audio_test.go, main_test.go, stats_test.go, send_test.go.
 **Why:** Zero tests exist. A bug in Encode() or decodeKey() corrupts every score in send mode silently.

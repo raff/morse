@@ -147,6 +147,14 @@ character and decodes it.
 ```
 
 - The decoded characters appear as you type.
+- **Hold** a dit or dah key to auto-repeat at the configured WPM rate —
+  useful for practicing smooth, evenly-timed elements.
+- Pressing the other paddle while one is held pauses the first paddle's
+  auto-repeat (iambic keyer behaviour).
+- On **macOS**, **left-Ctrl** and **right-Ctrl** can be used as dit and dah
+  respectively. This lets you plug in a USB iambic paddle that presents itself
+  as a keyboard with Ctrl keys. Hold-to-repeat and iambic behaviour work the
+  same way as with `[`/`]`.
 - Once the correct word is fully keyed and the character boundary timer fires,
   the entry advances automatically — no Enter needed.
 - Press **Enter** at any time to submit what you have so far.
@@ -194,7 +202,7 @@ Blank lines and lines beginning with `#` are ignored.
 
 ## Implementation
 
-The program is split across six source files.
+The program is split across nine source files.
 
 ### `morse.go` — encoding and timing
 
@@ -258,11 +266,15 @@ would produce.
 polls `IsPlaying()` every millisecond until the buffer is exhausted. Used for
 word playback in listen/quiz modes where blocking is acceptable.
 
+**`AudioPlayer.PlayQueued(data []byte)`** enqueues a PCM chunk for serial
+playback via a background goroutine and returns immediately. Used in sending
+mode so that rapid dit/dah keypresses each play a clean, gap-terminated tone
+in strict sequence with no overlap and no blocking of the input loop.
+
 **`AudioPlayer.PlayNoWait(data []byte)`** creates an oto player, starts it,
 and returns immediately. The player reference is kept in `AudioPlayer.active`
 until `IsPlaying()` returns false, preventing Go's garbage collector from
-collecting (and thereby stopping) the player mid-play. Used in sending mode
-for per-keypress audio feedback with no input-blocking latency.
+collecting (and thereby stopping) the player mid-play.
 
 ### `input.go` — raw terminal input and quiz interaction
 
@@ -271,6 +283,12 @@ mode (`ICANON=0`, `ECHO=0`, `ISIG=0`, `OPOST=0`) so bytes arrive the instant
 a key is pressed rather than after Enter. A goroutine reads one byte at a time
 from stdin into a buffered channel, leaving the quiz loop free to `select`
 between input and a timer without any blocking reads.
+
+**`NewTerminalKeySource(bytes <-chan byte, ditKey, dahKey byte) <-chan KeyEvent`**
+converts the raw byte stream into a `KeyEvent` channel. Each dit/dah byte
+emits a synthetic press immediately followed by a release. Used as the
+non-macOS fallback and for non-send modes where press/release timing is not
+needed.
 
 **`askUser(..., timeout)`** manages one quiz entry:
 
@@ -298,28 +316,87 @@ In raw mode Ctrl+C does not generate SIGINT (ISIG is off), so it is caught
 directly as byte `0x03`. A separate goroutine handles `SIGTERM` (and
 non-check/send-mode `SIGINT`) and also restores the terminal before exiting.
 
+### `keyevent.go` — iambic input pipeline
+
+Defines the two-stage event model for sending mode.
+
+**`KeyEvent`** carries a raw key press or release with a timestamp. `KeyID`
+values: `KeyDit`, `KeyDah`, `KeyEnter`, `KeyDelete`, `KeyQuit`.
+
+**`MorseInput`** is the processed event consumed by `sendWord`. `MorseInputKind`
+values: `MorseInputDit`, `MorseInputDah`, `MorseInputDelete`, `MorseInputSubmit`,
+`MorseInputQuit`.
+
+**`NewIambicAdapter(keys <-chan KeyEvent, timing Timing) <-chan MorseInput`**
+runs a goroutine that converts raw press/release events into WPM-rate
+auto-repeating Morse elements:
+
+- **Press**: emit one element immediately, arm a repeat timer at the element's
+  period (`dit + toneGap` or `dah + toneGap`).
+- **Repeat timer fires** (key still held, other paddle not held): emit again
+  and re-arm.
+- **Other paddle pressed**: drain the current paddle's repeat timer to prevent
+  simultaneous timers generating spurious extra elements (e.g. `r` instead of
+  `a`). When the other paddle is released, restart the paused timer.
+- **Release**: cancel the repeat timer.
+
+A priority-peek on the key channel is performed when a timer fires, so that a
+key event arriving at the same instant as a tick is processed first.
+
+### `input_send_darwin.go` / `input_send_other.go` — platform key sources
+
+**`StartSendKeySource(stdinChars <-chan byte, ditKey, dahKey byte) (<-chan KeyEvent, func(), error)`**
+is the platform-specific entry point for sending-mode input.
+
+**On macOS** (`input_send_darwin.go`), a `CGEventTap` intercepts system-wide
+keyboard events (requires Accessibility permission). This gives accurate
+press **and** release timestamps for both the configured dit/dah keys and
+left/right Control (commonly emitted by USB iambic paddles).
+
+Two mechanisms scope events to our own terminal window:
+
+- **Stdin correlation** (regular keys): the tap records the keydown timestamp
+  as *pending*. When the corresponding byte arrives in our PTY stdin within
+  30 ms, the press is *confirmed* and delivered. Events typed in other windows
+  never produce a byte in our stdin, so their pending entries simply expire.
+- **Terminal focus events** (modifier keys): on startup `\033[?1004h` enables
+  DECSET 1004 reporting. The terminal sends `ESC [ I` to our stdin when our
+  window gains focus and `ESC [ O` when it loses focus. The tap callback
+  checks a `g_windowFocused` flag before delivering Ctrl events, so paddle
+  presses in other windows (including other windows of the same Terminal.app)
+  are silently dropped. Focus reporting is disabled on exit with `\033[?1004l`.
+
+OS key-repeat events are suppressed (`kCGKeyboardEventAutorepeat`); timing is
+driven entirely by the `IambicAdapter`.
+
+**On other platforms** (`input_send_other.go`), the raw byte stream is wrapped
+by `NewTerminalKeySource`: each dit/dah byte emits a synthetic press+release
+pair. Hold-to-repeat is not available.
+
 ### `send.go` — sending mode
 
 **`decodePattern(pattern string) rune`** maps a Morse pattern string (e.g.
 `".-"`) back to its character using a reverse lookup table built from
 `morseTable` at startup.
 
-**`sendWord(...) (correct, retried, quit bool)`** manages one sending entry:
+**`sendWord(inputs <-chan MorseInput, ...) (correct, retried, quit bool)`**
+manages one sending entry:
 
 1. Displays `[N] Key: word` and an empty `>` prompt.
-2. Runs a `select` loop over the raw-input byte channel and a character
-   boundary timer:
-   - Dit key (`[` by default) or dah key (`]`) appends `.` or `-` to the
-     current character pattern and plays a tone via `PlayNoWait`. The
-     character boundary timer is reset on every keypress.
-   - Backspace / Delete clears the entire attempt and sets a `penalized` flag.
-   - Enter submits whatever has been decoded so far.
-   - Ctrl+C / Ctrl+D return `quit=true`.
-3. When the character boundary timer fires (2× `CharGap`, 360 ms at 20 WPM),
+2. Pre-builds dit and dah PCM chunks (tone + inter-element silence) for queued
+   audio feedback.
+3. Runs a `select` loop over the `MorseInput` channel and a character boundary
+   timer:
+   - `MorseInputDit` / `MorseInputDah`: append `.` or `-` to the current
+     character pattern, play the corresponding tone via `PlayQueued`, and reset
+     the character boundary timer.
+   - `MorseInputDelete`: clears the entire attempt and sets a `penalized` flag.
+   - `MorseInputSubmit`: flushes the current character and jumps to scoring.
+   - `MorseInputQuit`: returns `quit=true`.
+4. When the character boundary timer fires (2× `CharGap`, 360 ms at 20 WPM),
    the current pattern is decoded and appended to the decoded word. If the
-   decoded word matches the target and the boundary timer fired (not Enter),
-   the entry advances automatically.
-4. Returns `correct=true` only if the word matched **and** no Delete was used.
+   decoded word matches the target, the entry advances automatically.
+5. Returns `correct=true` only if the word matched **and** no Delete was used.
    `retried=true` if Delete was pressed at least once.
 
 ### `stats.go` — session persistence
