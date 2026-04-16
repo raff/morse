@@ -96,13 +96,19 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	//       sendWord flushes the character.
 	//
 	// Dit (audio = 2×Dit = 120 ms at 20 WPM):
-	//   ditFirstRepeat = 4×Dit = 240 ms → 120 ms margin after audio ends.
+	//   ditFirstRepeat = 3.5×Dit = 210 ms (CharGap + ToneGap/2).
+	//
+	//   Calibrated from measured press durations:
+	//     single tap:          ~50–150 ms  → no repeat needed  (150 < 210 ✓)
+	//     intentional hold:    ~226 ms     → repeat fires       (226 > 210 ✓)
+	//     longer hold (2-dit): ~303 ms     → 2nd repeat at 330 ms, so released
+	//                                         before it → exactly 2 dits       ✓
 	//
 	// Dah (audio = 4×Dit = 240 ms at 20 WPM):
 	//   dahFirstRepeat = 5×Dit = 300 ms → 60 ms margin after audio ends.
 	//   Using 4×Dit (= dahPeriod) would leave zero margin.
-	ditFirstRepeat := timing.CharGap + timing.ToneGap           // 4×Dit
-	dahFirstRepeat := timing.CharGap + 2*timing.ToneGap         // 5×Dit
+	ditFirstRepeat := timing.CharGap + timing.ToneGap/2         // 3.5×Dit ≈ 210 ms
+	dahFirstRepeat := timing.CharGap + 2*timing.ToneGap         // 5×Dit   = 300 ms
 
 	ditHeld, dahHeld := false, false
 	var ditLastEventAt, dahLastEventAt time.Time
