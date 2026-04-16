@@ -128,6 +128,13 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	dahTimer := time.NewTimer(0)
 	drainTimer(dahTimer)
 
+	// squeezeTimer fires when both paddles are held simultaneously for
+	// squeezeDuration, emitting a Delete to clear the current input without
+	// needing to reach for the keyboard.
+	squeezeTimer := time.NewTimer(0)
+	drainTimer(squeezeTimer)
+	const squeezeDuration = 1500 * time.Millisecond // 1.5 s
+
 	handleEvent := func(evt KeyEvent) bool {
 		switch evt.Key {
 		case KeyDit:
@@ -143,10 +150,14 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				send(MorseInputDit)
 				drainTimer(dahTimer) // pause dah repeat while dit is active
 				ditTimer.Reset(ditFirstRepeat)
+				if dahHeld {
+					squeezeTimer.Reset(squeezeDuration)
+				}
 			} else if ditHeld {
 				ditLastEventAt = evt.At
 				ditHeld = false
 				drainTimer(ditTimer)
+				drainTimer(squeezeTimer)
 				if dahHeld {
 					dahTimer.Reset(dahPeriod) // resume dah repeat
 				}
@@ -164,10 +175,14 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				send(MorseInputDah)
 				drainTimer(ditTimer) // pause dit repeat while dah is active
 				dahTimer.Reset(dahFirstRepeat)
+				if ditHeld {
+					squeezeTimer.Reset(squeezeDuration)
+				}
 			} else if dahHeld {
 				dahLastEventAt = evt.At
 				dahHeld = false
 				drainTimer(dahTimer)
+				drainTimer(squeezeTimer)
 				if ditHeld {
 					ditTimer.Reset(ditPeriod) // resume dit repeat
 				}
@@ -230,6 +245,13 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				send(MorseInputDah)
 				dahTimer.Reset(dahPeriod)
 			}
+
+		case <-squeezeTimer.C:
+			// Both paddles held for squeezeDuration — emit Delete.
+			// Drain element timers so no spurious elements follow.
+			drainTimer(ditTimer)
+			drainTimer(dahTimer)
+			send(MorseInputDelete)
 		}
 	}
 }
