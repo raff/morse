@@ -19,9 +19,7 @@ type KeyEvent struct {
 	Pressed bool // true = pressed, false = released
 	At      time.Time
 	// Direct is true for modifier-key events (USB iambic paddle via left/right
-	// Ctrl) that bypass stdin correlation.  The IambicAdapter uses a shorter
-	// initial repeat delay for direct events so that paddle hold-to-repeat
-	// fires at the configured WPM rate rather than the slower keyboard window.
+	// Ctrl) that bypass stdin correlation and have no corresponding stdin byte.
 	Direct bool
 }
 
@@ -43,13 +41,24 @@ type MorseInput struct {
 
 // NewIambicAdapter wraps a KeyEvent channel and produces a MorseInput channel.
 //
-// Dit/dah keys auto-repeat at the configured WPM rate while held:
-//   - Key press: emit one element immediately, arm a repeat timer.
-//   - Repeat timer fires (key still held, other paddle not held): emit again.
-//   - Other paddle pressed: stop the current paddle's auto-repeat to prevent
-//     simultaneous timers generating spurious extra elements (e.g. 'r' instead
-//     of 'a').  When the other paddle is released the paused timer is restarted.
-//   - Key release: cancel the repeat timer.
+// Iambic auto-repeat: holding a paddle emits elements at the configured WPM
+// rate, as a hardware keyer would.
+//
+//   - Press: emit one element immediately, arm the repeat timer.
+//   - Repeat timer fires (key still held, other paddle not pressed): emit again
+//     and re-arm at the standard WPM period (ditPeriod / dahPeriod).
+//   - Other paddle pressed: pause the current paddle's repeat timer to avoid
+//     simultaneous timers; resume when that paddle is released.
+//   - Release: cancel the repeat timer.
+//
+// The initial repeat delay (ditFirstRepeat / dahFirstRepeat) is intentionally
+// longer than the WPM period so that a single deliberate press-release does not
+// accidentally trigger auto-repeat, and to give the operator a moment to decide
+// whether to continue holding.  Subsequent repeats use the exact WPM period.
+//
+// Contact-bounce debounce: press events are rejected if the previous accepted
+// event for that key arrived within debounceDuration.  Releases are always
+// accepted immediately so that quick simultaneous keying cannot get stuck.
 //
 // Control keys (Enter, Delete, Quit) emit once on press.
 func NewIambicAdapter(keys <-chan KeyEvent, timing Timing) <-chan MorseInput {
@@ -58,34 +67,42 @@ func NewIambicAdapter(keys <-chan KeyEvent, timing Timing) <-chan MorseInput {
 	return out
 }
 
+// drainTimer stops t and drains any pending tick, leaving it in a clean state.
+func drainTimer(t *time.Timer) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+}
+
 func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	defer close(out)
 
 	send := func(k MorseInputKind) { out <- MorseInput{Kind: k} }
 
-	ditPeriod := timing.Dit + timing.ToneGap
-	dahPeriod := timing.Dah + timing.ToneGap
+	ditPeriod := timing.Dit + timing.ToneGap   // 2×Dit at any WPM
+	dahPeriod := timing.Dah + timing.ToneGap   // 4×Dit at any WPM
 
-	// Initial repeat delay — fires before the first auto-repeat.
+	// Initial repeat delays before auto-repeat kicks in.
 	//
-	// Two constraints:
-	//   (a) Must be > typical key-press hold time (~100 ms) so a single
-	//       deliberate press does not accidentally trigger a repeat.
-	//   (b) Must be < charBoundary (2×CharGap = 6×Dit) so that intentional
-	//       hold-to-repeat fires before sendWord flushes the character.
+	// Constraints:
+	//   (a) Must be > typical single press duration (~100 ms) to avoid
+	//       accidental auto-repeat on a normal press.
+	//   (b) Must give the operator time to react after hearing the first
+	//       element before the second fires.
+	//   (c) Must be < charBoundary (6×Dit) so auto-repeat fires before
+	//       sendWord flushes the character.
 	//
-	// CharGap + ToneGap = 4×Dit satisfies both at any WPM:
-	//   20 WPM → 240 ms  (charBoundary = 360 ms, margin = 140 ms)
-	//   30 WPM → 160 ms  (charBoundary = 240 ms, margin = 60 ms)
-	// Subsequent repeats use the normal ditPeriod / dahPeriod.
+	// Dit (audio = 2×Dit = 120 ms at 20 WPM):
+	//   ditFirstRepeat = 4×Dit = 240 ms → 120 ms margin after audio ends.
 	//
-	// TODO: 4×Dit is still noticeably longer than the 2×Dit repeat rate,
-	// producing an uneven feel (long pause then fast repeats). Ideally
-	// firstRepeat ≈ ditPeriod, but the ~100ms paddle press duration leaves
-	// insufficient margin at typical WPM rates. Options: hardware debounce
-	// data, adaptive threshold based on press duration, or a small constant
-	// added to ditPeriod with a measured safety floor.
-	firstRepeat := timing.CharGap + timing.ToneGap
+	// Dah (audio = 4×Dit = 240 ms at 20 WPM):
+	//   dahFirstRepeat = 5×Dit = 300 ms → 60 ms margin after audio ends.
+	//   Using 4×Dit (= dahPeriod) would leave zero margin.
+	ditFirstRepeat := timing.CharGap + timing.ToneGap           // 4×Dit
+	dahFirstRepeat := timing.CharGap + 2*timing.ToneGap         // 5×Dit
 
 	ditHeld, dahHeld := false, false
 	var ditLastEventAt, dahLastEventAt time.Time
@@ -96,9 +113,10 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	//   • Press bounce:   press → bounce-release → bounce-press  (all within ~5 ms)
 	//   • Release bounce: release → bounce-press → bounce-release (all within ~5 ms)
 	//
-	// We use a single "last event" timestamp per key: ignore any event (press or
-	// release) that arrives within debounceDuration of the previous event for that
-	// key.  This blocks all bounce events regardless of direction.
+	// Only presses are debounced: rejected if the previous accepted dit/dah event
+	// (press or release) was < debounceDuration ago.  Releases are never debounced
+	// so that quick simultaneous keying (press dit, press dah, release dit all
+	// within 15 ms) cannot leave ditHeld stuck true.
 	//
 	// Measured USB paddle press durations: 30–100 ms.
 	// Typical contact bounce duration: < 10 ms.
@@ -110,36 +128,27 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	dahTimer := time.NewTimer(0)
 	drainTimer(dahTimer)
 
-	// handleEvent processes a single KeyEvent. Returns true if the goroutine
-	// should exit.
 	handleEvent := func(evt KeyEvent) bool {
 		switch evt.Key {
 		case KeyDit:
 			if evt.Pressed {
 				if ditHeld {
-					break // already held
-				}
-				// Debounce presses only: reject if last accepted dit event
-				// (press or release) was too recent — that's a bounce re-press.
-				// Releases are never debounced so quick simultaneous keying
-				// (press dit, press dah, release dit within 15 ms) still works.
-				if !ditLastEventAt.IsZero() && evt.At.Sub(ditLastEventAt) < debounceDuration {
 					break
+				}
+				if !ditLastEventAt.IsZero() && evt.At.Sub(ditLastEventAt) < debounceDuration {
+					break // bounce re-press
 				}
 				ditLastEventAt = evt.At
 				ditHeld = true
 				send(MorseInputDit)
-				// Pressing dit pauses dah auto-repeat to avoid spurious elements
-				// when the paddles overlap slightly.
-				drainTimer(dahTimer)
-				ditTimer.Reset(firstRepeat)
+				drainTimer(dahTimer) // pause dah repeat while dit is active
+				ditTimer.Reset(ditFirstRepeat)
 			} else if ditHeld {
 				ditLastEventAt = evt.At
 				ditHeld = false
 				drainTimer(ditTimer)
-				// Resume dah auto-repeat if dah paddle is still held.
 				if dahHeld {
-					dahTimer.Reset(dahPeriod)
+					dahTimer.Reset(dahPeriod) // resume dah repeat
 				}
 			}
 		case KeyDah:
@@ -153,16 +162,14 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				dahLastEventAt = evt.At
 				dahHeld = true
 				send(MorseInputDah)
-				// Pressing dah pauses dit auto-repeat.
-				drainTimer(ditTimer)
-				dahTimer.Reset(firstRepeat)
+				drainTimer(ditTimer) // pause dit repeat while dah is active
+				dahTimer.Reset(dahFirstRepeat)
 			} else if dahHeld {
 				dahLastEventAt = evt.At
 				dahHeld = false
 				drainTimer(dahTimer)
-				// Resume dit auto-repeat if dit paddle is still held.
 				if ditHeld {
-					ditTimer.Reset(ditPeriod)
+					ditTimer.Reset(ditPeriod) // resume dit repeat
 				}
 			}
 		case KeyEnter:
@@ -193,8 +200,6 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 			}
 
 		case <-ditTimer.C:
-			// Priority-peek: if a key event arrived at the same time as the
-			// timer tick, process it first to avoid spurious extra elements.
 			select {
 			case evt, ok := <-keys:
 				if !ok {
@@ -211,7 +216,6 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 			}
 
 		case <-dahTimer.C:
-			// Priority-peek (same rationale as dit timer).
 			select {
 			case evt, ok := <-keys:
 				if !ok {
@@ -226,16 +230,6 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				send(MorseInputDah)
 				dahTimer.Reset(dahPeriod)
 			}
-		}
-	}
-}
-
-// drainTimer stops t and drains any pending tick, leaving it in a clean state.
-func drainTimer(t *time.Timer) {
-	if !t.Stop() {
-		select {
-		case <-t.C:
-		default:
 		}
 	}
 }

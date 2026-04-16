@@ -7,6 +7,7 @@ import (
 	"unicode"
 )
 
+
 // reverseTable maps Morse patterns (e.g. ".-") back to their characters.
 var reverseTable map[string]rune
 
