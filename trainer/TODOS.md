@@ -2,11 +2,18 @@
 
 ## High priority
 
-### Fix send-mode dit auto-repeat (USB iambic paddle)
-**What:** Consecutive dit presses consistently produce too many dits. Typing `f` (..-.) reliably generates extra dits (e.g. `...-.`). The problem does not reproduce in other trainers at the same WPM, so it is not operator error.
-**Why:** Corrupts character decoding silently; makes the trainer unusable for practice at any realistic keying speed.
-**What we know:** Both dit and dah now use `firstRepeat = CharGap + 2×ToneGap = 5×Dit` (300 ms at 20 WPM) before the first auto-repeat, which is below `charBoundary` (6×Dit = 360 ms). USB paddle press durations measured at 30–100 ms via `make timing`. The extra elements appear to come from auto-repeat firing too early or from the IambicAdapter state machine allowing a repeat after a quick press+release cycle. The `make timing` tool is the right instrument for further diagnosis — log raw `KeyEvent` timestamps alongside `MorseInput` output while keying `f`.
+### USB iambic paddle debounce — ongoing refinement
+**What:** Contact bounce on paddle contacts generates spurious release+press or press+release pairs within ~5 ms, causing extra elements or a stuck-held loop.
+**Current approach:** `runIambic` debounces PRESSES only (not releases): a press is ignored if it arrives within 15 ms of the previous accepted dit/dah event (press or release). Releases are always accepted immediately so that quick simultaneous keying (press dit, press dah, release dit all within 15 ms) cannot get stuck.
+**Status:** Decoding is now correct. Minor remaining issue: first dit of a word sometimes has an audio stutter (sounds like `. .-.` instead of `..-. `), but the character displays correctly as F — see audio warmup TODO below.
+**Tuning:** If spurious elements return, run `make timing` while keying `f` and check whether the bounce interval exceeds 15 ms. Raise `debounceDuration` if needed (max safe value ≈ half the shortest real press-to-press gap).
 **Depends on:** `IambicAdapter` + `CGEventTap` pipeline (current code).
+
+### Audio warmup latency on first element
+**What:** The first dit of the first word in a session sometimes sounds slightly late, making a 4-element character (e.g. `f` = `..-. `) sound like it has an extra gap after the first element.
+**Why:** oto audio players may have per-player startup overhead. The `drainQueue` goroutine creates a new `oto.Player` for each tone; the first one pays the OS audio pipeline warmup cost.
+**Possible fix:** In `sendWord` (or `NewAudioPlayer`), play a 1–5 ms silent buffer before keying starts to pre-warm the audio pipeline.
+**Depends on:** Audio subsystem (`audio.go`, oto library).
 
 
 

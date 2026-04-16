@@ -88,6 +88,22 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	firstRepeat := timing.CharGap + timing.ToneGap
 
 	ditHeld, dahHeld := false, false
+	var ditLastEventAt, dahLastEventAt time.Time
+
+	// debounceDuration suppresses contact bounce on USB iambic paddle switches.
+	//
+	// Mechanical contacts bounce on both press and release:
+	//   • Press bounce:   press → bounce-release → bounce-press  (all within ~5 ms)
+	//   • Release bounce: release → bounce-press → bounce-release (all within ~5 ms)
+	//
+	// We use a single "last event" timestamp per key: ignore any event (press or
+	// release) that arrives within debounceDuration of the previous event for that
+	// key.  This blocks all bounce events regardless of direction.
+	//
+	// Measured USB paddle press durations: 30–100 ms.
+	// Typical contact bounce duration: < 10 ms.
+	// 15 ms filters bounces with a 15 ms margin below the shortest real press.
+	const debounceDuration = 15 * time.Millisecond
 
 	ditTimer := time.NewTimer(0)
 	drainTimer(ditTimer)
@@ -99,14 +115,26 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	handleEvent := func(evt KeyEvent) bool {
 		switch evt.Key {
 		case KeyDit:
-			if evt.Pressed && !ditHeld {
+			if evt.Pressed {
+				if ditHeld {
+					break // already held
+				}
+				// Debounce presses only: reject if last accepted dit event
+				// (press or release) was too recent — that's a bounce re-press.
+				// Releases are never debounced so quick simultaneous keying
+				// (press dit, press dah, release dit within 15 ms) still works.
+				if !ditLastEventAt.IsZero() && evt.At.Sub(ditLastEventAt) < debounceDuration {
+					break
+				}
+				ditLastEventAt = evt.At
 				ditHeld = true
 				send(MorseInputDit)
 				// Pressing dit pauses dah auto-repeat to avoid spurious elements
 				// when the paddles overlap slightly.
 				drainTimer(dahTimer)
 				ditTimer.Reset(firstRepeat)
-			} else if !evt.Pressed && ditHeld {
+			} else if ditHeld {
+				ditLastEventAt = evt.At
 				ditHeld = false
 				drainTimer(ditTimer)
 				// Resume dah auto-repeat if dah paddle is still held.
@@ -115,13 +143,21 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				}
 			}
 		case KeyDah:
-			if evt.Pressed && !dahHeld {
+			if evt.Pressed {
+				if dahHeld {
+					break
+				}
+				if !dahLastEventAt.IsZero() && evt.At.Sub(dahLastEventAt) < debounceDuration {
+					break
+				}
+				dahLastEventAt = evt.At
 				dahHeld = true
 				send(MorseInputDah)
 				// Pressing dah pauses dit auto-repeat.
 				drainTimer(ditTimer)
 				dahTimer.Reset(firstRepeat)
-			} else if !evt.Pressed && dahHeld {
+			} else if dahHeld {
+				dahLastEventAt = evt.At
 				dahHeld = false
 				drainTimer(dahTimer)
 				// Resume dit auto-repeat if dit paddle is still held.
