@@ -69,16 +69,23 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	// Initial repeat delay — fires before the first auto-repeat.
 	//
 	// Two constraints:
-	//   (a) Must be > typical key-press hold time (~150 ms) so a single
+	//   (a) Must be > typical key-press hold time (~100 ms) so a single
 	//       deliberate press does not accidentally trigger a repeat.
 	//   (b) Must be < charBoundary (2×CharGap = 6×Dit) so that intentional
 	//       hold-to-repeat fires before sendWord flushes the character.
 	//
-	// CharGap + 2×ToneGap = 5×Dit satisfies both at any WPM:
-	//   20 WPM → 300 ms  (charBoundary = 360 ms)
-	//   30 WPM → 200 ms  (charBoundary = 240 ms)
+	// CharGap + ToneGap = 4×Dit satisfies both at any WPM:
+	//   20 WPM → 240 ms  (charBoundary = 360 ms, margin = 140 ms)
+	//   30 WPM → 160 ms  (charBoundary = 240 ms, margin = 60 ms)
 	// Subsequent repeats use the normal ditPeriod / dahPeriod.
-	firstRepeat := timing.CharGap + 2*timing.ToneGap
+	//
+	// TODO: 4×Dit is still noticeably longer than the 2×Dit repeat rate,
+	// producing an uneven feel (long pause then fast repeats). Ideally
+	// firstRepeat ≈ ditPeriod, but the ~100ms paddle press duration leaves
+	// insufficient margin at typical WPM rates. Options: hardware debounce
+	// data, adaptive threshold based on press duration, or a small constant
+	// added to ditPeriod with a measured safety floor.
+	firstRepeat := timing.CharGap + timing.ToneGap
 
 	ditHeld, dahHeld := false, false
 
