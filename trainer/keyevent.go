@@ -112,6 +112,7 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 
 	ditHeld, dahHeld := false, false
 	var ditLastEventAt, dahLastEventAt time.Time
+	squeezing := false // true while squeezeTimer is armed (both paddles held)
 
 	// debounceDuration suppresses contact bounce on USB iambic paddle switches.
 	//
@@ -157,15 +158,32 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				drainTimer(dahTimer) // pause dah repeat while dit is active
 				ditTimer.Reset(ditFirstRepeat)
 				if dahHeld {
+					squeezing = true
 					squeezeTimer.Reset(squeezeDuration)
 				}
 			} else if ditHeld {
+				held := evt.At.Sub(ditLastEventAt)
 				ditLastEventAt = evt.At
 				ditHeld = false
 				drainTimer(ditTimer)
-				drainTimer(squeezeTimer)
-				if dahHeld {
-					dahTimer.Reset(dahPeriod) // resume dah repeat
+				if squeezing {
+					// During a squeeze attempt: cancel only when both paddles are
+					// released so that a contact bounce on one paddle during the
+					// hold cannot cancel the squeezeTimer and cause a loop on the
+					// other paddle.
+					if !dahHeld {
+						squeezing = false
+						drainTimer(squeezeTimer)
+					}
+					// Never restart dah repeat while a squeeze is in progress.
+				} else {
+					drainTimer(squeezeTimer)
+					// Only resume dah repeat if dit was held long enough to be a
+					// real press — a bounce release (held < debounceDuration) must
+					// not restart the other timer, or it causes an infinite loop.
+					if dahHeld && held >= debounceDuration {
+						dahTimer.Reset(dahPeriod)
+					}
 				}
 			}
 		case KeyDah:
@@ -182,15 +200,32 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				drainTimer(ditTimer) // pause dit repeat while dah is active
 				dahTimer.Reset(dahFirstRepeat)
 				if ditHeld {
+					squeezing = true
 					squeezeTimer.Reset(squeezeDuration)
 				}
 			} else if dahHeld {
+				held := evt.At.Sub(dahLastEventAt)
 				dahLastEventAt = evt.At
 				dahHeld = false
 				drainTimer(dahTimer)
-				drainTimer(squeezeTimer)
-				if ditHeld {
-					ditTimer.Reset(ditPeriod) // resume dit repeat
+				if squeezing {
+					// During a squeeze attempt: cancel only when both paddles are
+					// released so that a contact bounce on one paddle during the
+					// hold cannot cancel the squeezeTimer and cause a loop on the
+					// other paddle.
+					if !ditHeld {
+						squeezing = false
+						drainTimer(squeezeTimer)
+					}
+					// Never restart dit repeat while a squeeze is in progress.
+				} else {
+					drainTimer(squeezeTimer)
+					// Only resume dit repeat if dah was held long enough to be a
+					// real press — a bounce release (held < debounceDuration) must
+					// not restart the other timer, or it causes an infinite loop.
+					if ditHeld && held >= debounceDuration {
+						ditTimer.Reset(ditPeriod) // resume dit repeat
+					}
 				}
 			}
 		case KeyEnter:
@@ -254,9 +289,20 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 
 		case <-squeezeTimer.C:
 			// Both paddles held for squeezeDuration — emit Delete.
-			// Drain element timers so no spurious elements follow.
+			// Clear held/squeezing state so that releasing either paddle
+			// afterwards does not restart the other paddle's auto-repeat timer.
+			// Stamp last-event times so that any contact-bounce re-press on
+			// the subsequent paddle release is within debounceDuration and
+			// gets filtered (without this, the 1.5 s gap since the original
+			// press means the debounce window has long expired).
+			now := time.Now()
+			ditLastEventAt = now
+			dahLastEventAt = now
 			drainTimer(ditTimer)
 			drainTimer(dahTimer)
+			squeezing = false
+			ditHeld = false
+			dahHeld = false
 			send(MorseInputDelete)
 		}
 	}
