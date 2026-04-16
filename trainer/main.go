@@ -342,9 +342,3 @@ func printSummary(played, correct int, wrongAnswers []string, checkMode bool) {
 	}
 }
 
-func pluralize(singular, plural string, n int) string {
-	if n == 1 {
-		return singular
-	}
-	return plural
-}

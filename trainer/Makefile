@@ -9,9 +9,9 @@ ifeq ($(UNAME),Darwin)
 else
   EXCLUDE_PLATFORM := input_send_darwin.go
 endif
-PKG_SRCS := $(filter-out main.go test_timing.go $(EXCLUDE_PLATFORM) $(wildcard *_test.go),$(wildcard *.go))
+PKG_SRCS := $(filter-out main.go test_timing.go test_count.go $(EXCLUDE_PLATFORM) $(wildcard *_test.go),$(wildcard *.go))
 
-.PHONY: build run clean timing
+.PHONY: build run clean timing count
 
 build:
 	go build $(LDFLAGS) -o mt .
@@ -23,6 +23,11 @@ run: build
 # raw KeyEvents + IambicAdapter outputs with millisecond timestamps.
 timing:
 	go run $(LDFLAGS) $(PKG_SRCS) test_timing.go
+
+# Run the element-counting diagnostic: key elements and see exactly how many
+# were generated per burst, with inter-element timing and audio feedback.
+count:
+	go run $(LDFLAGS) $(PKG_SRCS) test_count.go
 
 clean:
 	rm -f mt

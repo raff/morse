@@ -69,9 +69,3 @@ func main() {
 	}
 }
 
-func pluralize(singular, plural string, n int) string {
-	if n == 1 {
-		return singular
-	}
-	return plural
-}

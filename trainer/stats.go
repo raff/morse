@@ -185,3 +185,11 @@ func formatDuration(d time.Duration) string {
 	}
 	return fmt.Sprintf("%ds", s)
 }
+
+
+func pluralize(singular, plural string, n int) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
