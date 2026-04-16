@@ -85,30 +85,12 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	ditPeriod := timing.Dit + timing.ToneGap   // 2×Dit at any WPM
 	dahPeriod := timing.Dah + timing.ToneGap   // 4×Dit at any WPM
 
-	// Initial repeat delays before auto-repeat kicks in.
-	//
-	// Constraints:
-	//   (a) Must be > typical single press duration (~100 ms) to avoid
-	//       accidental auto-repeat on a normal press.
-	//   (b) Must give the operator time to react after hearing the first
-	//       element before the second fires.
-	//   (c) Must be < charBoundary (6×Dit) so auto-repeat fires before
-	//       sendWord flushes the character.
-	//
-	// Dit (audio = 2×Dit = 120 ms at 20 WPM):
-	//   ditFirstRepeat = 3.5×Dit = 210 ms (CharGap + ToneGap/2).
-	//
-	//   Calibrated from measured press durations:
-	//     single tap:          ~50–150 ms  → no repeat needed  (150 < 210 ✓)
-	//     intentional hold:    ~226 ms     → repeat fires       (226 > 210 ✓)
-	//     longer hold (2-dit): ~303 ms     → 2nd repeat at 330 ms, so released
-	//                                         before it → exactly 2 dits       ✓
-	//
-	// Dah (audio = 4×Dit = 240 ms at 20 WPM):
-	//   dahFirstRepeat = 5×Dit = 300 ms → 60 ms margin after audio ends.
-	//   Using 4×Dit (= dahPeriod) would leave zero margin.
-	ditFirstRepeat := timing.CharGap + timing.ToneGap/2         // 3.5×Dit ≈ 210 ms
-	dahFirstRepeat := timing.CharGap + 2*timing.ToneGap         // 5×Dit   = 300 ms
+	// Auto-repeat uses the exact WPM period for all repeats including the first,
+	// matching standard hardware iambic keyer behaviour.  A separate "first
+	// repeat delay" was previously used to prevent accidental auto-repeat on
+	// single taps, but it made the first inter-element audio gap 2.5× longer
+	// than the WPM period (ditFirstRepeat=210 ms vs ditPeriod=120 ms at 20 WPM),
+	// producing inconsistent audio timing that fought muscle memory.
 
 	ditHeld, dahHeld := false, false
 	var ditLastEventAt, dahLastEventAt time.Time
@@ -156,7 +138,7 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				ditHeld = true
 				send(MorseInputDit)
 				drainTimer(dahTimer) // pause dah repeat while dit is active
-				ditTimer.Reset(ditFirstRepeat)
+				ditTimer.Reset(ditPeriod)
 				if dahHeld {
 					squeezing = true
 					squeezeTimer.Reset(squeezeDuration)
@@ -198,7 +180,7 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				dahHeld = true
 				send(MorseInputDah)
 				drainTimer(ditTimer) // pause dit repeat while dah is active
-				dahTimer.Reset(dahFirstRepeat)
+				dahTimer.Reset(dahPeriod)
 				if ditHeld {
 					squeezing = true
 					squeezeTimer.Reset(squeezeDuration)

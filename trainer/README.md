@@ -331,14 +331,26 @@ values: `MorseInputDit`, `MorseInputDah`, `MorseInputDelete`, `MorseInputSubmit`
 runs a goroutine that converts raw press/release events into WPM-rate
 auto-repeating Morse elements:
 
-- **Press**: emit one element immediately, arm a repeat timer at the element's
-  period (`dit + toneGap` or `dah + toneGap`).
+- **Press**: emit one element immediately, arm a repeat timer at the exact WPM
+  period (`dit + toneGap` or `dah + toneGap`). The same period is used for the
+  first repeat and all subsequent repeats, matching standard hardware iambic
+  keyer behaviour and keeping audio timing consistent throughout a held sequence.
 - **Repeat timer fires** (key still held, other paddle not held): emit again
   and re-arm.
 - **Other paddle pressed**: drain the current paddle's repeat timer to prevent
   simultaneous timers generating spurious extra elements (e.g. `r` instead of
   `a`). When the other paddle is released, restart the paused timer.
 - **Release**: cancel the repeat timer.
+
+**Contact-bounce debounce**: press events are rejected if the previous accepted
+event for that key arrived within 15 ms. Releases are never debounced so that
+rapid simultaneous keying cannot leave a paddle stuck held.
+
+**Squeeze-delete**: holding both paddles simultaneously for 1.5 s emits a
+`MorseInputDelete`, clearing the current input without reaching for the
+keyboard. While a squeeze is in progress, individual paddle releases do not
+cancel the timer or restart the other paddle's auto-repeat — only releasing
+both paddles together cancels the squeeze.
 
 A priority-peek on the key channel is performed when a timer fires, so that a
 key event arriving at the same instant as a tick is processed first.
