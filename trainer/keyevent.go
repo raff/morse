@@ -52,6 +52,10 @@ type MorseInput struct {
 //     simultaneous timers; resume when that paddle is released.
 //   - Release: cancel the repeat timer.
 //
+// Idle-delete: if no paddle is pressed for idleDuration (1.5 s), a
+// MorseInputDelete is emitted to clear the current input without reaching for
+// the keyboard.
+//
 // Contact-bounce debounce: press events are rejected if the previous accepted
 // event for that key arrived within debounceDuration.  Releases are always
 // accepted immediately so that quick simultaneous keying cannot get stuck.
@@ -78,13 +82,11 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 
 	send := func(k MorseInputKind) { out <- MorseInput{Kind: k} }
 
-	ditPeriod := timing.Dit + timing.ToneGap   // 2×Dit at any WPM
-	dahPeriod := timing.Dah + timing.ToneGap   // 4×Dit at any WPM
-
+	ditPeriod := timing.Dit + timing.ToneGap // 2×Dit at any WPM
+	dahPeriod := timing.Dah + timing.ToneGap // 4×Dit at any WPM
 
 	ditHeld, dahHeld := false, false
 	var ditLastEventAt, dahLastEventAt time.Time
-	squeezing := false // true while squeezeTimer is armed (both paddles held)
 
 	// debounceDuration suppresses contact bounce on USB iambic paddle switches.
 	//
@@ -107,12 +109,13 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	dahTimer := time.NewTimer(0)
 	drainTimer(dahTimer)
 
-	// squeezeTimer fires when both paddles are held simultaneously for
-	// squeezeDuration, emitting a Delete to clear the current input without
-	// needing to reach for the keyboard.
-	squeezeTimer := time.NewTimer(0)
-	drainTimer(squeezeTimer)
-	const squeezeDuration = 1500 * time.Millisecond // 1.5 s
+	// idleTimer fires when no paddle has been pressed for idleDuration, emitting
+	// a Delete to clear the current input without needing to reach for the
+	// keyboard. It is armed when the last held paddle is released and canceled
+	// when either paddle is pressed.
+	idleTimer := time.NewTimer(0)
+	drainTimer(idleTimer)
+	const idleDuration = 1500 * time.Millisecond
 
 	handleEvent := func(evt KeyEvent) bool {
 		switch evt.Key {
@@ -126,36 +129,23 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				}
 				ditLastEventAt = evt.At
 				ditHeld = true
+				drainTimer(idleTimer)
 				send(MorseInputDit)
 				drainTimer(dahTimer) // pause dah repeat while dit is active
 				ditTimer.Reset(ditPeriod)
-				if dahHeld {
-					squeezing = true
-					squeezeTimer.Reset(squeezeDuration)
-				}
 			} else if ditHeld {
 				held := evt.At.Sub(ditLastEventAt)
 				ditLastEventAt = evt.At
 				ditHeld = false
 				drainTimer(ditTimer)
-				if squeezing {
-					// During a squeeze attempt: cancel only when both paddles are
-					// released so that a contact bounce on one paddle during the
-					// hold cannot cancel the squeezeTimer and cause a loop on the
-					// other paddle.
-					if !dahHeld {
-						squeezing = false
-						drainTimer(squeezeTimer)
-					}
-					// Never restart dah repeat while a squeeze is in progress.
-				} else {
-					drainTimer(squeezeTimer)
-					// Only resume dah repeat if dit was held long enough to be a
-					// real press — a bounce release (held < debounceDuration) must
-					// not restart the other timer, or it causes an infinite loop.
-					if dahHeld && held >= debounceDuration {
+				if dahHeld {
+					// Dah still held: resume dah repeat (unless this was a bounce).
+					if held >= debounceDuration {
 						dahTimer.Reset(dahPeriod)
 					}
+				} else {
+					// Both paddles now up: start idle countdown.
+					idleTimer.Reset(idleDuration)
 				}
 			}
 		case KeyDah:
@@ -168,36 +158,23 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				}
 				dahLastEventAt = evt.At
 				dahHeld = true
+				drainTimer(idleTimer)
 				send(MorseInputDah)
 				drainTimer(ditTimer) // pause dit repeat while dah is active
 				dahTimer.Reset(dahPeriod)
-				if ditHeld {
-					squeezing = true
-					squeezeTimer.Reset(squeezeDuration)
-				}
 			} else if dahHeld {
 				held := evt.At.Sub(dahLastEventAt)
 				dahLastEventAt = evt.At
 				dahHeld = false
 				drainTimer(dahTimer)
-				if squeezing {
-					// During a squeeze attempt: cancel only when both paddles are
-					// released so that a contact bounce on one paddle during the
-					// hold cannot cancel the squeezeTimer and cause a loop on the
-					// other paddle.
-					if !ditHeld {
-						squeezing = false
-						drainTimer(squeezeTimer)
+				if ditHeld {
+					// Dit still held: resume dit repeat (unless this was a bounce).
+					if held >= debounceDuration {
+						ditTimer.Reset(ditPeriod)
 					}
-					// Never restart dit repeat while a squeeze is in progress.
 				} else {
-					drainTimer(squeezeTimer)
-					// Only resume dit repeat if dah was held long enough to be a
-					// real press — a bounce release (held < debounceDuration) must
-					// not restart the other timer, or it causes an infinite loop.
-					if ditHeld && held >= debounceDuration {
-						ditTimer.Reset(ditPeriod) // resume dit repeat
-					}
+					// Both paddles now up: start idle countdown.
+					idleTimer.Reset(idleDuration)
 				}
 			}
 		case KeyEnter:
@@ -259,22 +236,8 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 				dahTimer.Reset(dahPeriod)
 			}
 
-		case <-squeezeTimer.C:
-			// Both paddles held for squeezeDuration — emit Delete.
-			// Clear held/squeezing state so that releasing either paddle
-			// afterwards does not restart the other paddle's auto-repeat timer.
-			// Stamp last-event times so that any contact-bounce re-press on
-			// the subsequent paddle release is within debounceDuration and
-			// gets filtered (without this, the 1.5 s gap since the original
-			// press means the debounce window has long expired).
-			now := time.Now()
-			ditLastEventAt = now
-			dahLastEventAt = now
-			drainTimer(ditTimer)
-			drainTimer(dahTimer)
-			squeezing = false
-			ditHeld = false
-			dahHeld = false
+		case <-idleTimer.C:
+			// No paddle pressed for idleDuration — clear the current input.
 			send(MorseInputDelete)
 		}
 	}

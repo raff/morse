@@ -159,6 +159,8 @@ character and decodes it.
   the entry advances automatically — no Enter needed.
 - Press **Enter** at any time to submit what you have so far.
 - Press **Backspace** or **Delete** to clear the current attempt and retry.
+  Alternatively, leave both paddles untouched for 1.5 s — the input clears
+  automatically.
   A retried word is scored as wrong even if you subsequently key it correctly.
 - Press **Ctrl+C** or **Ctrl+D** to stop early.
 
@@ -344,11 +346,9 @@ auto-repeating Morse elements:
 event for that key arrived within 15 ms. Releases are never debounced so that
 rapid simultaneous keying cannot leave a paddle stuck held.
 
-**Squeeze-delete**: holding both paddles simultaneously for 1.5 s emits a
-`MorseInputDelete`, clearing the current input without reaching for the
-keyboard. While a squeeze is in progress, individual paddle releases do not
-cancel the timer or restart the other paddle's auto-repeat — only releasing
-both paddles together cancels the squeeze.
+**Idle-delete**: if no paddle is pressed for 1.5 s, a `MorseInputDelete` is
+emitted automatically, clearing the current input without reaching for the
+keyboard.
 
 A priority-peek on the key channel is performed when a timer fires, so that a
 key event arriving at the same instant as a tick is processed first.

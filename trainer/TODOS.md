@@ -5,8 +5,7 @@
 ### USB iambic paddle debounce — ongoing refinement
 **What:** Contact bounce on paddle contacts generates spurious release+press or press+release pairs within ~5 ms, causing extra elements or a stuck-held loop.
 **Current approach:** `runIambic` debounces PRESSES only (not releases): a press is ignored if it arrives within 15 ms of the previous accepted dit/dah event (press or release). Releases are always accepted immediately so that quick simultaneous keying (press dit, press dah, release dit all within 15 ms) cannot get stuck.
-**Status:** Mostly correct. Squeeze-delete loop is nearly gone after adding `squeezing bool` guard (release handlers don't cancel squeezeTimer or restart the other paddle's timer while a squeeze is in progress). Rare edge cases may remain — needs more testing under varied keying styles.
-**TODO:** Review the squeeze-delete logic (`squeezing` bool in `runIambic`) after more real-world use. In particular: (a) verify that releasing one paddle intentionally mid-squeeze correctly cancels the squeeze when the second is released; (b) check whether any remaining loop scenarios occur with very fast paddle alternation near the 1.5 s squeeze boundary.
+**Status:** Mostly correct. Squeeze-delete replaced with idle-delete: after 1.5 s of no paddle activity the current input clears automatically, removing all squeeze-related complexity.
 **Tuning:** If spurious elements return, run `make timing` while keying `f` and check whether the bounce interval exceeds 15 ms. Raise `debounceDuration` if needed (max safe value ≈ half the shortest real press-to-press gap).
 **Depends on:** `IambicAdapter` + `CGEventTap` pipeline (current code).
 
