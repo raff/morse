@@ -339,7 +339,7 @@ func StartSendKeySource(stdinChars <-chan byte, ditKey, dahKey byte) (<-chan Key
 				}
 				// All other escape sequences are discarded.
 
-			// Everything else (OS key-repeat bytes, etc.) is discarded.
+				// Everything else (OS key-repeat bytes, etc.) is discarded.
 			}
 		}
 	}()

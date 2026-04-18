@@ -38,7 +38,9 @@ func main() {
 	defer ap.Close()
 
 	// Short click per element — distinct, non-overlapping, one per event.
-	clickTone := append(tone(ap.freq, ap.volume, 60*time.Millisecond),
+	ditTone := append(tone(ap.freq, ap.volume, 60*time.Millisecond),
+		silence(20*time.Millisecond)...)
+	dahTone := append(tone(ap.freq, ap.volume, 120*time.Millisecond),
 		silence(20*time.Millisecond)...)
 
 	stdinChars, restore, err := startRawInput()
@@ -82,15 +84,15 @@ func main() {
 	inputs := NewIambicAdapter(logged, timing)
 
 	// Flush the accumulated burst after 1.2 s of silence.
-	const flushSilence = 1200 * time.Millisecond
+	const flushSilence = 500 * time.Millisecond
 	flushTimer := time.NewTimer(0)
 	drainTimer(flushTimer)
 
 	var (
-		t0          time.Time     // start of current burst; zero between bursts
-		lastPress   [2]time.Time  // press time per key (indexed by KeyID)
-		pattern     strings.Builder
-		nElems      int
+		t0        time.Time    // start of current burst; zero between bursts
+		lastPress [2]time.Time // press time per key (indexed by KeyID)
+		pattern   strings.Builder
+		nElems    int
 	)
 
 	keyName := [2]string{"dit", "dah"}
@@ -154,7 +156,7 @@ func main() {
 			now := time.Now()
 			switch inp.Kind {
 			case MorseInputDit:
-				ap.PlayQueued(clickTone)
+				ap.PlayQueued(ditTone)
 				t := elapsed(now)
 				nElems++
 				pattern.WriteByte('.')
@@ -162,7 +164,7 @@ func main() {
 				armFlush()
 
 			case MorseInputDah:
-				ap.PlayQueued(clickTone)
+				ap.PlayQueued(dahTone)
 				t := elapsed(now)
 				nElems++
 				pattern.WriteByte('-')

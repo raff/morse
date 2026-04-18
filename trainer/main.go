@@ -341,4 +341,3 @@ func printSummary(played, correct int, wrongAnswers []string, checkMode bool) {
 		fmt.Printf("Missed: %d entries\n", len(wrongAnswers))
 	}
 }
-

@@ -6,11 +6,11 @@ import "time"
 type KeyID int
 
 const (
-	KeyDit   KeyID = iota // dit paddle: [ or left-Ctrl
+	KeyDit    KeyID = iota // dit paddle: [ or left-Ctrl
 	KeyDah                 // dah paddle: ] or right-Ctrl
-	KeyEnter              // submit word
-	KeyDelete             // clear and retry
-	KeyQuit               // Ctrl+C / Ctrl+D / EOF
+	KeyEnter               // submit word
+	KeyDelete              // clear and retry
+	KeyQuit                // Ctrl+C / Ctrl+D / EOF
 )
 
 // KeyEvent is a raw key press or release event with a timestamp.
@@ -27,7 +27,7 @@ type KeyEvent struct {
 type MorseInputKind int
 
 const (
-	MorseInputDit    MorseInputKind = iota
+	MorseInputDit MorseInputKind = iota
 	MorseInputDah
 	MorseInputDelete
 	MorseInputSubmit

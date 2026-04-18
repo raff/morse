@@ -183,4 +183,3 @@ func NewTerminalKeySource(bytes <-chan byte, ditKey, dahKey byte) <-chan KeyEven
 	}()
 	return out
 }
-

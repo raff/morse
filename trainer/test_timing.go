@@ -63,9 +63,12 @@ func main() {
 	for inp := range morseInputs {
 		t := time.Now()
 
-		fmt.Printf("%7.1f ms  morse=%v\r\n",
-			float64(t.Sub(t0).Microseconds())/1000, inp.Kind)
+		if inp.Kind == MorseInoutDelete {
+			fmt.Println()
+		} else {
+			fmt.Printf("%7.1f ms  morse=%v\r\n",
+				float64(t.Sub(t0).Microseconds())/1000, inp.Kind)
+		}
 		t0 = t
 	}
 }
-
