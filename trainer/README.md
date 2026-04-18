@@ -331,10 +331,8 @@ values: `MorseInputDit`, `MorseInputDah`, `MorseInputDelete`, `MorseInputSubmit`
 runs a goroutine that converts raw press/release events into WPM-rate
 auto-repeating Morse elements:
 
-- **Press**: emit one element immediately, arm a repeat timer at the exact WPM
-  period (`dit + toneGap` or `dah + toneGap`). The same period is used for the
-  first repeat and all subsequent repeats, matching standard hardware iambic
-  keyer behaviour and keeping audio timing consistent throughout a held sequence.
+- **Press**: emit one element immediately, arm a repeat timer at the WPM period
+  (`dit + toneGap` or `dah + toneGap`).
 - **Repeat timer fires** (key still held, other paddle not held): emit again
   and re-arm.
 - **Other paddle pressed**: drain the current paddle's repeat timer to prevent

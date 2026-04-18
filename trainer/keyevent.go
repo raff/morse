@@ -44,17 +44,13 @@ type MorseInput struct {
 // Iambic auto-repeat: holding a paddle emits elements at the configured WPM
 // rate, as a hardware keyer would.
 //
-//   - Press: emit one element immediately, arm the repeat timer.
+//   - Press: emit one element immediately, arm the repeat timer at ditPeriod /
+//     dahPeriod (the exact WPM period, same as all subsequent repeats).
 //   - Repeat timer fires (key still held, other paddle not pressed): emit again
-//     and re-arm at the standard WPM period (ditPeriod / dahPeriod).
+//     and re-arm.
 //   - Other paddle pressed: pause the current paddle's repeat timer to avoid
 //     simultaneous timers; resume when that paddle is released.
 //   - Release: cancel the repeat timer.
-//
-// The initial repeat delay (ditFirstRepeat / dahFirstRepeat) is intentionally
-// longer than the WPM period so that a single deliberate press-release does not
-// accidentally trigger auto-repeat, and to give the operator a moment to decide
-// whether to continue holding.  Subsequent repeats use the exact WPM period.
 //
 // Contact-bounce debounce: press events are rejected if the previous accepted
 // event for that key arrived within debounceDuration.  Releases are always
@@ -85,12 +81,6 @@ func runIambic(keys <-chan KeyEvent, timing Timing, out chan<- MorseInput) {
 	ditPeriod := timing.Dit + timing.ToneGap   // 2×Dit at any WPM
 	dahPeriod := timing.Dah + timing.ToneGap   // 4×Dit at any WPM
 
-	// Auto-repeat uses the exact WPM period for all repeats including the first,
-	// matching standard hardware iambic keyer behaviour.  A separate "first
-	// repeat delay" was previously used to prevent accidental auto-repeat on
-	// single taps, but it made the first inter-element audio gap 2.5× longer
-	// than the WPM period (ditFirstRepeat=210 ms vs ditPeriod=120 ms at 20 WPM),
-	// producing inconsistent audio timing that fought muscle memory.
 
 	ditHeld, dahHeld := false, false
 	var ditLastEventAt, dahLastEventAt time.Time
