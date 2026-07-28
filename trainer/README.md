@@ -94,16 +94,24 @@ Word sources are checked in order: **command-line arguments → `-file` → buil
 ### Quiz mode (`-check`)
 
 The terminal is put in raw mode so keystrokes are processed as they arrive.
-After each entry plays you will see a prompt:
+The prompt appears *before* the entry starts playing, so you always know when
+input is being accepted:
 
 ```
 [3] > 
 ```
 
+- Playback is asynchronous: you can start typing while the entry is still
+  sounding, and the characters are echoed immediately. There is no dead window.
 - Type what you heard — characters appear as you type, Backspace works.
-- Press **Enter** to submit your answer.
+- Press **Enter** to submit your answer. Submitting during playback cuts the
+  entry short, so entries never overlap.
 - Press **Enter** alone (empty input) to replay the same entry. If `-timeout`
   is set, replaying resets the timer.
+- `-timeout` starts counting when playback *finishes*, so the limit measures
+  thinking time and does not include the length of the entry.
+- Leftover keystrokes from the previous entry (for example keys hit while the
+  score line printed) are discarded, so each answer starts clean.
 - Press **Ctrl+C** or **Ctrl+D** to stop early.
 
 After each answer the running score is shown:

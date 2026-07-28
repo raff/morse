@@ -45,34 +45,53 @@ func startRawInput() (<-chan byte, func(), error) {
 }
 
 // askUser handles one quiz entry in raw terminal mode.
-// Characters arrive one byte at a time so the timeout fires as soon as it
-// expires, regardless of whether the user has pressed Enter.
+//
+// askUser owns playback: the prompt is printed first and the audio starts in
+// the background, so the user can see where to type and can answer while the
+// entry is still sounding. Characters arrive one byte at a time and are echoed
+// as they are typed.
+//
+// The timeout only starts once playback has finished, so -timeout measures
+// thinking time rather than including the length of the entry.
 // An empty submission replays the audio and resets the timeout.
 // Returns (correct, quit).
 func askUser(chars <-chan byte, ap *AudioPlayer, audio []byte, expected string, n int, timeout time.Duration) (correct, quit bool) {
+	// Discard anything left over from the previous entry (for example keys hit
+	// while the score line was printing) so this answer starts clean. Input
+	// typed from here on belongs to this entry and is kept.
+	flushChars(chars)
+
 	for {
 		fmt.Printf("[%d] > ", n)
 		var input []byte
 
-		// A nil channel blocks forever, effectively disabling the timeout.
-		var timer <-chan time.Time
-		if timeout > 0 {
-			timer = time.After(timeout)
-		}
+		playDone, stopPlay := ap.PlayAsync(audio)
 
-		timedOut := false
+		// A nil channel blocks forever. timer stays nil until playback ends
+		// (and forever if no timeout was requested).
+		var timer <-chan time.Time
+
+		timedOut, quitting := false, false
 	collect:
 		for {
 			select {
+			case <-playDone:
+				// Playback finished — start the clock and stop selecting on
+				// this channel (a closed channel is always ready).
+				playDone = nil
+				if timeout > 0 {
+					timer = time.After(timeout)
+				}
+
 			case b, ok := <-chars:
 				if !ok { // stdin closed
-					fmt.Print("\r\n")
-					return false, true
+					quitting = true
+					break collect
 				}
 				switch b {
 				case 3, 4: // Ctrl+C / Ctrl+D
-					fmt.Print("\r\n")
-					return false, true
+					quitting = true
+					break collect
 				case '\r', '\n': // Enter — submit
 					fmt.Print("\r\n")
 					break collect
@@ -88,7 +107,7 @@ func askUser(chars <-chan byte, ap *AudioPlayer, audio []byte, expected string, 
 				default:
 					if b >= 32 && b < 127 { // printable ASCII
 						input = append(input, b)
-						fmt.Printf("%c", b)
+						fmt.Printf("%c", b) // raw mode disables echo; echo here
 					}
 				}
 
@@ -101,6 +120,14 @@ func askUser(chars <-chan byte, ap *AudioPlayer, audio []byte, expected string, 
 			}
 		}
 
+		// Silence the entry before printing the verdict or moving on, so two
+		// entries never overlap.
+		stopPlay()
+
+		if quitting {
+			fmt.Print("\r\n")
+			return false, true
+		}
 		if timedOut {
 			fmt.Printf("\r\n    time!  (was: %s)\r\n", expected)
 			return false, false
@@ -108,8 +135,8 @@ func askUser(chars <-chan byte, ap *AudioPlayer, audio []byte, expected string, 
 
 		answer := strings.TrimSpace(string(input))
 		if answer == "" {
-			// Replay audio and give a fresh timeout window.
-			ap.Play(audio)
+			// Replay: the next loop iteration restarts the audio and, once it
+			// finishes, gives a fresh timeout window.
 			continue
 		}
 		if strings.EqualFold(answer, strings.TrimSpace(expected)) {
@@ -130,6 +157,14 @@ func drainChars(ch <-chan byte) {
 			return
 		}
 	}
+}
+
+// flushChars discards buffered input, pausing briefly so bytes still in flight
+// between the stdin reader goroutine and the channel are caught too.
+func flushChars(ch <-chan byte) {
+	drainChars(ch)
+	time.Sleep(2 * time.Millisecond)
+	drainChars(ch)
 }
 
 // NewTerminalKeySource converts a raw byte channel (from startRawInput) into a

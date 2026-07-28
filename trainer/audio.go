@@ -98,6 +98,44 @@ func (p *AudioPlayer) Play(data []byte) {
 	}
 }
 
+// PlayAsync starts playback immediately and returns a channel that is closed
+// when the tone finishes, plus a stop function that cuts playback short.
+// Unlike PlayQueued it does not serialize, so the caller is responsible for
+// making sure only one PlayAsync tone is in flight at a time; calling stop
+// before starting the next one is enough.
+//
+// This is what quiz mode uses: the answer prompt can accept and echo
+// keystrokes while the entry is still playing.
+func (p *AudioPlayer) PlayAsync(data []byte) (<-chan struct{}, func()) {
+	done := make(chan struct{})
+	if len(data) == 0 {
+		close(done)
+		return done, func() {}
+	}
+
+	player := p.ctx.NewPlayer(bytes.NewReader(data))
+	player.Play()
+
+	cancel := make(chan struct{})
+	var once sync.Once
+	stop := func() { once.Do(func() { close(cancel) }) }
+
+	go func() {
+		defer close(done)
+		// Pause silences the player if it is still running (oto v3.4 auto-closes
+		// players on GC, so Close is deprecated). No-op once playback ended.
+		defer player.Pause()
+		for player.IsPlaying() {
+			select {
+			case <-cancel:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+	return done, stop
+}
+
 // PlayNoWait starts playback and returns immediately.
 // It retains a reference to the player until playback completes so that
 // Go's GC cannot collect (and thereby stop) an in-flight player.

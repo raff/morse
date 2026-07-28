@@ -243,7 +243,9 @@ outer:
 				fmt.Printf("[%d] %s\n", played+1, entry)
 			}
 
-			if needAudio && !*send {
+			// Check mode plays the entry itself (asynchronously, so the prompt
+			// is up while it sounds); send mode has no entry audio to play.
+			if needAudio && !*send && !*check {
 				ap.Play(audio)
 			}
 
